@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CanonicalExecutionEvent",
+  "type": "object",
+  "required": ["event_type", "source_platform", "source_execution_id", "assistant_id", "collection_mode", "coverage"],
+  "properties": {
+    "event_type": {"type": "string"},
+    "source_platform": {"type": "string"},
+    "source_execution_id": {"type": "string"},
+    "assistant_id": {"type": "string"},
+    "assistant_name": {"type": "string"},
+    "session_id": {"type": "string"},
+    "collection_mode": {"enum": ["runtime_adapter", "hook_collector", "log_collector"]},
+    "coverage": {"enum": ["full", "partial"]},
+    "payload": {"type": "object"}
+  }
+}

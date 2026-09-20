@@ -1,0 +1,15 @@
+{
+  "event_type": "execution.finished",
+  "source_platform": "codex",
+  "source_execution_id": "platform-run-id",
+  "assistant_id": "stable-assistant-id",
+  "assistant_name": "Human readable assistant name",
+  "session_id": "optional-session-id",
+  "payload": {
+    "user_input": "dynamic input",
+    "output": "final output",
+    "status": "completed",
+    "termination": "completed",
+    "spans": []
+  }
+}
