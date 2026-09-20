@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,16 @@ _CODEX_BEGIN = "# BEGIN agent-asset-expert"
 _CODEX_END = "# END agent-asset-expert"
 _HOOK_COMMAND = "agent-asset-expert hook --platform {platform}"
 _WORKBUDDY_EVENTS = ("UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "SessionEnd")
+
+
+def _command(platform: str) -> str:
+    executable = shutil.which("agent-asset-expert") or str(Path(sys.argv[0]).resolve())
+    return f"{executable} hook --platform {platform}"
+
+
+def _owns_hook(command: Any, platform: str) -> bool:
+    parts = str(command).split()
+    return len(parts) == 4 and Path(parts[0]).name == "agent-asset-expert" and parts[1:] == ["hook", "--platform", platform]
 
 
 def _install_codex_mcp(config_path: Path) -> dict[str, str]:
@@ -90,13 +102,16 @@ def _install_workbuddy_hooks(settings_path: Path) -> dict[str, str]:
     backup.parent.mkdir(parents=True, exist_ok=True)
     backup.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     hooks = value.setdefault("hooks", {})
-    command = _HOOK_COMMAND.format(platform="workbuddy")
+    command = _command("workbuddy")
     for event in _WORKBUDDY_EVENTS:
         matchers = hooks.setdefault(event, [])
         if not isinstance(matchers, list):
             raise ValueError(f"WorkBuddy hooks.{event} must be a list")
-        existing = any(isinstance(child, dict) and child.get("command") == command for matcher in matchers if isinstance(matcher, dict) for child in matcher.get("hooks", []) if isinstance(matcher.get("hooks"), list))
-        if not existing:
+        existing = [child for matcher in matchers if isinstance(matcher, dict) for child in matcher.get("hooks", []) if isinstance(matcher.get("hooks"), list) and isinstance(child, dict) and _owns_hook(child.get("command"), "workbuddy")]
+        if existing:
+            for child in existing:
+                child["command"] = command
+        else:
             matchers.append({"hooks": [{"type": "command", "command": command}]})
     settings_path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return {"path": str(settings_path), "backup": str(backup)}
@@ -120,11 +135,37 @@ def _uninstall_workbuddy_hooks(settings_path: Path) -> None:
             children = matcher.get("hooks")
             if not isinstance(children, list):
                 kept.append(matcher); continue
-            remaining = [child for child in children if not (isinstance(child, dict) and child.get("command") == _HOOK_COMMAND.format(platform="workbuddy"))]
+            remaining = [child for child in children if not (isinstance(child, dict) and _owns_hook(child.get("command"), "workbuddy"))]
             if remaining:
                 kept.append({**matcher, "hooks": remaining})
         hooks[event] = kept
     settings_path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _install_workbuddy_mcp(path: Path) -> dict[str, str]:
+    value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(value, dict):
+        raise ValueError("WorkBuddy mcp.json must be an object")
+    backup = data_root() / "backups" / "workbuddy-mcp.json"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    servers = value.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise ValueError("WorkBuddy mcp.json mcpServers must be an object")
+    servers["agent_asset_expert"] = {"command": shutil.which("agent-asset-expert") or str(Path(sys.argv[0]).resolve()), "args": ["mcp"], "disabled": False}
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"path": str(path), "backup": str(backup)}
+
+
+def _uninstall_workbuddy_mcp(path: Path, backup_path: Path) -> None:
+    if not path.is_file(): return
+    value = json.loads(path.read_text(encoding="utf-8")); servers = value.get("mcpServers", {})
+    if not isinstance(servers, dict) or "agent_asset_expert" not in servers: return
+    backup = json.loads(backup_path.read_text(encoding="utf-8")) if backup_path.is_file() else {}
+    prior = backup.get("mcpServers", {}).get("agent_asset_expert") if isinstance(backup, dict) else None
+    if prior is None: servers.pop("agent_asset_expert")
+    else: servers["agent_asset_expert"] = prior
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _install_codex_hooks(path: Path) -> dict[str, str]:
@@ -182,7 +223,8 @@ def install(platform: str) -> int:
         if result.detected and adapter.platform == "codex" and result.hook_config:
             detail["owned_hook_config"] = _install_codex_hooks(Path(result.hook_config))
         if result.detected and adapter.platform == "workbuddy" and result.mcp_config:
-            detail["owned_hook_config"] = _install_workbuddy_hooks(Path(result.mcp_config))
+            detail["owned_hook_config"] = _install_workbuddy_hooks(Path(result.hook_config))
+            detail["owned_mcp_config"] = _install_workbuddy_mcp(Path(result.mcp_config))
         results.append(detail)
         if result.detected:
             manifest["platforms"][adapter.platform] = detail
@@ -197,7 +239,8 @@ def doctor(platform: str) -> int:
     selected = {name: value for name, value in selected.items() if value}
     store = AssetStore()
     assistants = store.list_assistants()
-    report = {"installed_platforms": selected, "registered_assistants": assistants, "mcp_command": ["agent-asset-expert", "mcp"], "healthy": bool(selected) and bool(assistants), "required_action": "Run one real Agent task so the collector can verify an execution" if selected and not assistants else ""}
+    platform_health = {name: any(item["platform"] == name for item in assistants) for name in selected}
+    report = {"installed_platforms": selected, "registered_assistants": assistants, "platform_health": platform_health, "mcp_command": ["agent-asset-expert", "mcp"], "healthy": bool(selected) and all(platform_health.values()), "required_action": "Run one real Agent task on each installed platform to verify collection" if any(not value for value in platform_health.values()) else ""}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["healthy"] else 2
 
@@ -215,6 +258,8 @@ def uninstall(platform: str) -> int:
     if config:
         if platform == "tigerose":
             _uninstall_tigerose_mcp(Path(config), Path(installed["owned_mcp_config"]["backup"]))
+        elif platform == "workbuddy":
+            _uninstall_workbuddy_mcp(Path(config), Path(installed["owned_mcp_config"]["backup"]))
         else:
             _uninstall_codex_mcp(Path(config))
     hook_config = installed.get("owned_hook_config", {}).get("path")

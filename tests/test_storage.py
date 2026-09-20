@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent_asset_expert.mcp_server import ReadonlyTools
 from agent_asset_expert.adapters.tigerose_runtime import TigeroseRuntimeBridge
-from agent_asset_expert.cli import _install_codex_hooks, _install_tigerose_mcp, _install_workbuddy_hooks, _uninstall_codex_hooks, _uninstall_tigerose_mcp, _uninstall_workbuddy_hooks
+from agent_asset_expert.cli import _install_codex_hooks, _install_tigerose_mcp, _install_workbuddy_hooks, _install_workbuddy_mcp, _uninstall_codex_hooks, _uninstall_tigerose_mcp, _uninstall_workbuddy_hooks, _uninstall_workbuddy_mcp
 from agent_asset_expert.hook_lifecycle import HookLifecycleCollector
 from agent_asset_expert.recorder import ObservationRecorder
 from agent_asset_expert.storage import AssetStore
@@ -65,7 +65,8 @@ def test_workbuddy_hook_lifecycle_and_owned_settings_entries(tmp_path, monkeypat
     _install_workbuddy_hooks(settings)
     _install_workbuddy_hooks(settings)
     value = __import__("json").loads(settings.read_text(encoding="utf-8"))
-    assert sum(child.get("command") == "agent-asset-expert hook --platform workbuddy" for matcher in value["hooks"]["Stop"] for child in matcher["hooks"]) == 1
+    commands = [child.get("command") for matcher in value["hooks"]["Stop"] for child in matcher["hooks"]]
+    assert sum(command.endswith("agent-asset-expert hook --platform workbuddy") for command in commands) == 1
     collector = HookLifecycleCollector(ObservationRecorder(AssetStore(tmp_path / "assets")))
     collector.ingest({"hook_event_name": "UserPromptSubmit", "source_platform": "workbuddy", "session_id": "s", "turn_id": "t", "workspace": "/project", "prompt": "hello"})
     collector.ingest({"hook_event_name": "PostToolUse", "source_platform": "workbuddy", "session_id": "s", "turn_id": "t", "tool_name": "bash", "tool_input": {"cmd": "pwd"}, "result_summary": "ok"})
@@ -76,6 +77,29 @@ def test_workbuddy_hook_lifecycle_and_owned_settings_entries(tmp_path, monkeypat
     _uninstall_workbuddy_hooks(settings)
     value = __import__("json").loads(settings.read_text(encoding="utf-8"))
     assert value["hooks"]["Stop"] == [{"hooks": [{"type": "command", "command": "existing"}]}]
+
+
+def test_workbuddy_mcp_is_owned_and_restored(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_ASSET_EXPERT_HOME", str(tmp_path / "assets"))
+    path = tmp_path / "mcp.json"
+    path.write_text('{"mcpServers":{"other":{"command":"other"}}}', encoding="utf-8")
+    owned = _install_workbuddy_mcp(path)
+    value = __import__("json").loads(path.read_text(encoding="utf-8"))
+    assert value["mcpServers"]["agent_asset_expert"]["args"] == ["mcp"]
+    _uninstall_workbuddy_mcp(path, __import__("pathlib").Path(owned["backup"]))
+    value = __import__("json").loads(path.read_text(encoding="utf-8"))
+    assert "agent_asset_expert" not in value["mcpServers"]
+
+
+def test_collector_accepts_pretty_printed_hook_json(monkeypatch):
+    import io
+    from agent_asset_expert import collector
+
+    received = []
+    monkeypatch.setattr(collector, "ingest", lambda value: received.append(value))
+    monkeypatch.setattr(collector.sys, "stdin", io.StringIO('{\n  "hook_event_name": "Stop"\n}\n'))
+    collector.main()
+    assert received == [{"hook_event_name": "Stop"}]
 
 
 def test_codex_hook_entries_are_owned_and_removed(tmp_path, monkeypatch):

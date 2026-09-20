@@ -81,7 +81,7 @@ class WorkBuddyAdapter(Adapter):
         reason = "WorkBuddy Hook lifecycle is available; bundled runtime internals are not patchable by default"
         if not runtime.is_file():
             reason = "WorkBuddy settings Hook lifecycle is available; bundled runtime path was not found"
-        return AdapterResult(self.platform, True, "hook_collector", "partial", reason, str(settings))
+        return AdapterResult(self.platform, True, "hook_collector", "partial", reason, str(Path.home() / ".workbuddy" / "mcp.json"), str(settings))
 
 
 def adapters() -> dict[str, Adapter]:

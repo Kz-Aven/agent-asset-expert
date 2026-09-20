@@ -47,7 +47,17 @@ def ingest(event: dict[str, Any]) -> str | None:
 
 
 def main() -> None:
-    for line in sys.stdin:
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return
+    try:
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            ingest(value)
+            return
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    for line in raw.splitlines():
         try:
             ingest(json.loads(line))
         except (json.JSONDecodeError, TypeError, ValueError):
